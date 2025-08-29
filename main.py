@@ -1,6 +1,3 @@
-# ==============================
-# 2) Imports
-# ==============================
 import os
 import re
 import io
@@ -10,14 +7,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-
 import gradio as gr
 from pydantic import BaseModel, Field
 from transformers import AutoTokenizer, AutoModelForCausalLM
-
 from gtts import gTTS
 import tempfile
-
 def narrate_text(text: str) -> str:
     """Convert chatbot output to speech and return audio filepath"""
     if not text or text.strip() == "":
@@ -26,13 +20,7 @@ def narrate_text(text: str) -> str:
     tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
     tts.save(tmp_path)
     return tmp_path
-
-
-# ==============================
-# 3) Load Granite model (4-bit for Colab T4)
-# ==============================
 model_id = "ibm-granite/granite-3.3-8b-instruct"
-
 tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=True)
 model = AutoModelForCausalLM.from_pretrained(
     model_id,
@@ -42,10 +30,6 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 model.eval()
 print("✅ Granite model loaded!")
-
-# ==============================
-# 4) Data Models and Defaults
-# ==============================
 class UserProfile(BaseModel):
     persona: str = Field(description="student or professional")
     location: Optional[str] = None
@@ -66,15 +50,10 @@ DEFAULT_EXPENSE_CATS = [
     "Debt", "Education", "Entertainment", "Shopping", "Savings/Investments", "Other",
 ]
 
-# ==============================
-# 5) Helpers: currency + category normalization
-# ==============================
 def currency_prefix(cur: str) -> str:
     return "$" if cur.upper() == "USD" else (cur.upper() + " ")
-
 def normalize_category(raw: str) -> str:
     cat = str(raw).strip().lower()
-    # Map using regex like the Streamlit version
     if re.search(r"sav|invest", cat):
         return "Savings/Investments"
     if re.search(r"house|rent|mortg", cat):
@@ -99,9 +78,6 @@ def normalize_category(raw: str) -> str:
         return "Shopping"
     return "Other"
 
-# ==============================
-# 6) Budget engine (same logic as your Streamlit app)
-# ==============================
 def summarize_budget(income: float, expenses: Dict[str, float]) -> BudgetSummary:
     total_expenses = sum(expenses.values())
     net_savings = income - total_expenses
@@ -132,9 +108,6 @@ def summarize_budget(income: float, expenses: Dict[str, float]) -> BudgetSummary
         flags=flags,
     )
 
-# ==============================
-# 7) Build system prompt (persona + currency + salary line)
-# ==============================
 def build_system_prompt(profile: UserProfile) -> str:
     income_note = (
         f" The user's monthly salary is {profile.currency} {profile.monthly_income:,.0f}."
@@ -158,9 +131,6 @@ def build_system_prompt(profile: UserProfile) -> str:
             + income_note + currency_note + location_note
         )
 
-# ==============================
-# 8) Granite text generation (return only the new text)
-# ==============================
 def granite_generate(prompt: str, max_new_tokens: int = 512, temperature: float = 0.7, top_p: float = 0.9) -> str:
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     with torch.no_grad():
@@ -173,16 +143,9 @@ def granite_generate(prompt: str, max_new_tokens: int = 512, temperature: float 
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id
         )
-    # Only return the newly generated continuation
     generated_ids = outputs[0][inputs["input_ids"].shape[1]:]
     return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-# ==============================
-# 9) Expense table shaping
-#    - Accept editable table (category, amount)
-#    - Accept CSV/XLSX in either "category,amount" long format
-#      or wide format with per-category columns and optional income column
-# ==============================
 def default_expense_df() -> pd.DataFrame:
     return pd.DataFrame({"category": DEFAULT_EXPENSE_CATS, "amount": [0.0]*len(DEFAULT_EXPENSE_CATS)})
 
@@ -193,7 +156,6 @@ def load_table_from_file(file_obj) -> Tuple[float, pd.DataFrame]:
     if file_obj is None:
         return 0.0, default_expense_df()
 
-    # file_obj is a tempfile path in Gradio when type="filepath"
     path = file_obj if isinstance(file_obj, str) else file_obj.name
     ext = (os.path.splitext(path)[1] or "").lower()
 
@@ -230,7 +192,6 @@ def load_table_from_file(file_obj) -> Tuple[float, pd.DataFrame]:
                     pass
         return income, full
 
-    # Case 2: wide format per-category columns
     income = 0.0
     values = {cat: 0.0 for cat in DEFAULT_EXPENSE_CATS}
     for c in df.columns:
@@ -238,12 +199,11 @@ def load_table_from_file(file_obj) -> Tuple[float, pd.DataFrame]:
         if lc in ("income", "salary", "monthly income"):
             try:
                 income = float(pd.to_numeric(df[c], errors="coerce").fillna(0).sum())
-                print(f"Found income column '{c}': {income}") # Debug print
+                print(f"Found income column '{c}': {income}")
             except Exception as e:
-                print(f"Error parsing income column '{c}': {e}") # Debug print
+                print(f"Error parsing income column '{c}': {e}")
                 pass
             continue
-        # try to map this column name to one of our categories
         mapped = normalize_category(c)
         try:
             values[mapped] += float(pd.to_numeric(df[c], errors="coerce").fillna(0).sum())
@@ -256,9 +216,6 @@ def load_table_from_file(file_obj) -> Tuple[float, pd.DataFrame]:
     return income, full
 
 
-# ==============================
-# 10) Orchestration: run_chat (inject table into prompt)
-# ==============================
 def table_to_text(df: pd.DataFrame, currency: str) -> str:
     # Pretty text table for LLM grounding
     buf = io.StringIO()
@@ -269,7 +226,6 @@ def table_to_text(df: pd.DataFrame, currency: str) -> str:
     return buf.getvalue()
 
 def run_chat(profile: UserProfile, user_input: str, table_df: Optional[pd.DataFrame]) -> Tuple[str, Optional[BudgetSummary]]:
-    # Aggregate expenses from the table
     expenses: Dict[str, float] = {c: 0.0 for c in DEFAULT_EXPENSE_CATS}
     income = float(profile.monthly_income or 0.0)
 
@@ -303,9 +259,6 @@ def run_chat(profile: UserProfile, user_input: str, table_df: Optional[pd.DataFr
     model_text = granite_generate(final_prompt)
     return model_text, summary
 
-# ==============================
-# 11) Gradio UI
-# ==============================
 CSS = """
 #metrics span.value { font-weight:700; }
 """
@@ -331,7 +284,6 @@ with gr.Blocks(css=CSS) as demo:
             gr.Markdown("### Expenses")
             file_upload = gr.File(label="Upload CSV/XLSX (either 'category,amount' long format, or wide format + optional income)", type="filepath")
 
-            # Editable table like Streamlit data_editor
             table = gr.Dataframe(
                 headers=["category", "amount"],
                 value=default_expense_df(),
@@ -344,7 +296,6 @@ with gr.Blocks(css=CSS) as demo:
 
             load_btn = gr.Button("Load file into table")
 
-            # Summary outputs
             gr.Markdown("### Budget Summary")
             income_md = gr.Markdown("")
             expenses_md = gr.Markdown("")
@@ -352,7 +303,6 @@ with gr.Blocks(css=CSS) as demo:
             saverate_md = gr.Markdown("")
             flags_md = gr.Markdown("")
             chart_plot = gr.Plot(label="By Category")
-    # ---- Handlers ----
     def handle_load(file_path):
         income, df = load_table_from_file(file_path)
         return df, float(income)
@@ -364,7 +314,6 @@ with gr.Blocks(css=CSS) as demo:
     )
 
     def on_send(user_msg_txt, history, persona_v, currency_v, location_v, monthly_income_v, table_df):
-        # Build profile
         prof = UserProfile(
             persona=persona_v,
             currency=currency_v,
@@ -372,7 +321,7 @@ with gr.Blocks(css=CSS) as demo:
             location=(location_v or "").strip() or None
         )
 
-        # Ensure dataframe shape
+
         df = pd.DataFrame(table_df, columns=["category", "amount"]).fillna({"category":"Other", "amount":0.0})
 
         reply, summary = run_chat(prof, user_msg_txt, df)
@@ -413,7 +362,6 @@ with gr.Blocks(css=CSS) as demo:
         return history, "", income_txt, expenses_txt, netsave_txt, saverate_txt, flags_txt, fig, audio_file
 
 
-    # ✅ Single click binding (include audio_out here!)
     send_btn.click(
         on_send,
         inputs=[user_msg, chatbot_ui, persona, currency, location, monthly_income, table],
